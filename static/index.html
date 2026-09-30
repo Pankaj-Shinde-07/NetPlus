@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NetPulse NOC v4.0 — Campus Network Intelligence</title>
+    <meta name="description" content="Real-time campus network monitoring — track devices, websites, bandwidth, and latency through your gateway.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <canvas id="bgCanvas" class="bg-canvas"></canvas>
+
+    <!-- TOPBAR -->
+    <header class="topbar">
+        <div class="topbar-brand">
+            <div class="brand-logo">
+                <i class="fa-solid fa-satellite-dish"></i>
+                <span class="logo-ring"></span>
+            </div>
+            <div class="brand-text">
+                <div class="brand-name">NETPULSE <span class="brand-chip">v4.0</span></div>
+                <div class="brand-sub">Campus Lab Network Intelligence &bull; Live Telemetry</div>
+            </div>
+        </div>
+
+        <div class="topbar-center">
+            <div class="proxy-pill" id="gatewayBox" title="Click to copy">
+                <div class="proxy-icon"><i class="fa-solid fa-tower-broadcast"></i></div>
+                <div class="proxy-info">
+                    <span class="proxy-label">GATEWAY PROXY</span>
+                    <span class="proxy-addr">192.168.137.1:8080 <i class="fa-regular fa-copy"></i></span>
+                </div>
+            </div>
+        </div>
+
+        <div class="topbar-actions">
+            <div class="ws-badge" id="wsStatus"><span class="ws-dot"></span><span class="ws-text">Live</span></div>
+
+            <button class="topbar-btn btn-ghost-act" id="btnThemeToggle" title="Toggle Light/Dark Mode">
+                <i class="fa-solid fa-moon" id="themeIcon"></i>
+            </button>
+            <button class="topbar-btn btn-primary-act" id="btnOpenGuide">
+                <i class="fa-solid fa-mobile-screen-button"></i> <span class="hide-sm">Setup</span>
+            </button>
+            <button class="topbar-btn btn-ghost-act" id="btnOpenPolicy">
+                <i class="fa-solid fa-shield-halved"></i> <span class="hide-sm">Policy</span>
+            </button>
+            <button class="topbar-btn btn-ghost-act" id="btnOpenQuota">
+                <i class="fa-solid fa-gauge-high"></i> <span class="hide-sm">Quotas</span>
+            </button>
+            <button class="topbar-btn btn-success-act" id="btnDownloadReport" title="Download HTML Audit Report">
+                <i class="fa-solid fa-file-lines"></i> <span class="hide-sm">Report</span>
+            </button>
+            <button class="topbar-btn btn-ghost-act" id="btnExportCSV">
+                <i class="fa-solid fa-download"></i> <span class="hide-sm">Export</span>
+            </button>
+            <button class="topbar-btn btn-danger-act" id="btnClearLogs" title="Clear all logs">
+                <i class="fa-solid fa-trash-can"></i>
+            </button>
+        </div>
+    </header>
+
+    <main class="app-shell">
+        <!-- KPI CARDS -->
+        <section class="kpi-row">
+            <div class="kpi-card" style="--accent:#3b82f6">
+                <div class="kpi-glow" style="background:#3b82f6"></div>
+                <div class="kpi-top">
+                    <div class="kpi-ico" style="background:rgba(59,130,246,.15);color:#60a5fa"><i class="fa-solid fa-globe"></i></div>
+                    <div class="kpi-trend up"><i class="fa-solid fa-arrow-trend-up"></i> Live</div>
+                </div>
+                <div class="kpi-val" id="valTotalRequests">0</div>
+                <div class="kpi-title">WEBSITES VISITED</div>
+                <div class="kpi-sub"><i class="fa-solid fa-filter-circle-xmark"></i> Background filtered</div>
+                <div class="kpi-bar"><div class="kpi-bar-fill" style="background:#3b82f6;width:70%"></div></div>
+            </div>
+            <div class="kpi-card" style="--accent:#10b981">
+                <div class="kpi-glow" style="background:#10b981"></div>
+                <div class="kpi-top">
+                    <div class="kpi-ico" style="background:rgba(16,185,129,.15);color:#34d399"><i class="fa-solid fa-mobile-screen"></i></div>
+                    <div class="kpi-trend up"><i class="fa-solid fa-signal"></i> Active</div>
+                </div>
+                <div class="kpi-val" id="valActiveDevices">0</div>
+                <div class="kpi-title">CONNECTED DEVICES</div>
+                <div class="kpi-sub" id="subActiveDevices"><i class="fa-solid fa-circle-dot"></i> Live Heartbeat</div>
+                <div class="kpi-bar"><div class="kpi-bar-fill" style="background:#10b981;width:50%"></div></div>
+            </div>
+            <div class="kpi-card" style="--accent:#a855f7">
+                <div class="kpi-glow" style="background:#a855f7"></div>
+                <div class="kpi-top">
+                    <div class="kpi-ico" style="background:rgba(168,85,247,.15);color:#c084fc"><i class="fa-solid fa-database"></i></div>
+                    <div class="kpi-trend neutral"><i class="fa-solid fa-wave-square"></i> Tracked</div>
+                </div>
+                <div class="kpi-val" id="valTotalBandwidth">0 B</div>
+                <div class="kpi-title">BANDWIDTH USED</div>
+                <div class="kpi-sub"><i class="fa-solid fa-arrows-up-down"></i> Up + Down</div>
+                <div class="kpi-bar"><div class="kpi-bar-fill" style="background:#a855f7;width:40%"></div></div>
+            </div>
+            <div class="kpi-card" style="--accent:#f43f5e">
+                <div class="kpi-glow" style="background:#f43f5e"></div>
+                <div class="kpi-top">
+                    <div class="kpi-ico" style="background:rgba(244,63,94,.15);color:#fb7185"><i class="fa-solid fa-ban"></i></div>
+                    <div class="kpi-trend down"><i class="fa-solid fa-shield-virus"></i> Enforced</div>
+                </div>
+                <div class="kpi-val" id="valTotalBlocked">0</div>
+                <div class="kpi-title">POLICY BLOCKS</div>
+                <div class="kpi-sub"><i class="fa-solid fa-fire-flame-curved"></i> Firewall Active</div>
+                <div class="kpi-bar"><div class="kpi-bar-fill" style="background:#f43f5e;width:20%"></div></div>
+            </div>
+        </section>
+
+        <!-- DEVICE MATRIX -->
+        <section class="panel devices-panel">
+            <div class="panel-header">
+                <div class="panel-title-group">
+                    <div class="panel-icon" style="background:rgba(6,182,212,.12);color:#06b6d4"><i class="fa-solid fa-users-gear"></i></div>
+                    <div><h2>Connected Device Matrix</h2><p>Real-time liveness, bandwidth &amp; activity per device</p></div>
+                </div>
+                <div class="panel-actions">
+                    <button class="icon-btn" id="btnRefreshDevices" title="Refresh"><i class="fa-solid fa-rotate"></i></button>
+                    <div class="device-count-badge" id="devicesCounter">0 Devices</div>
+                </div>
+            </div>
+            <div class="devices-grid" id="devicesDeckContainer">
+                <div class="empty-state">
+                    <div class="empty-icon"><i class="fa-solid fa-plug-circle-xmark"></i></div>
+                    <h3>No Devices Connected</h3>
+                    <p>Connect your phone to the PC Hotspot and configure proxy <code>192.168.137.1:8080</code></p>
+                    <button class="btn-setup-link" onclick="document.getElementById('guideModal').classList.add('active')">
+                        <i class="fa-solid fa-bolt"></i> Quick Setup Guide
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- CHARTS ROW (3-column triptych) -->
+        <div class="charts-triptych">
+            <div class="chart-panel large-chart">
+                <div class="chart-panel-header">
+                    <div class="chart-panel-title">
+                        <i class="fa-solid fa-chart-line" style="color:#6366f1"></i>
+                        <div><h3>Activity Timeline</h3><span>Live request stream</span></div>
+                    </div>
+                    <div class="streaming-pill"><span class="stream-dot"></span> LIVE</div>
+                </div>
+                <div class="chart-wrap" style="height:190px"><canvas id="timelineChart"></canvas></div>
+            </div>
+            <div class="chart-panel">
+                <div class="chart-panel-header">
+                    <div class="chart-panel-title">
+                        <i class="fa-solid fa-chart-pie" style="color:#a855f7"></i>
+                        <div><h3>Category Split</h3><span>Domain classification</span></div>
+                    </div>
+                </div>
+                <div class="chart-wrap" style="height:190px"><canvas id="categoryChart"></canvas></div>
+            </div>
+            <div class="chart-panel">
+                <div class="chart-panel-header">
+                    <div class="chart-panel-title">
+                        <i class="fa-solid fa-ranking-star" style="color:#06b6d4"></i>
+                        <div><h3>Top Sites</h3><span>By frequency</span></div>
+                    </div>
+                </div>
+                <div class="chart-wrap" style="height:190px"><canvas id="topDomainsChart"></canvas></div>
+            </div>
+        </div>
+
+        <!-- BANDWIDTH TREND + LATENCY MONITOR (2-column) -->
+        <div class="two-col-row">
+            <!-- Bandwidth Trend -->
+            <div class="chart-panel">
+                <div class="chart-panel-header">
+                    <div class="chart-panel-title">
+                        <i class="fa-solid fa-chart-area" style="color:#10b981"></i>
+                        <div><h3>Bandwidth Trend</h3><span>Hourly usage (last 24h)</span></div>
+                    </div>
+                    <button class="icon-btn" id="btnRefreshBandwidth" title="Refresh"><i class="fa-solid fa-rotate"></i></button>
+                </div>
+                <div class="chart-wrap" style="height:180px"><canvas id="bandwidthChart"></canvas></div>
+            </div>
+
+            <!-- Latency Monitor -->
+            <div class="chart-panel latency-panel">
+                <div class="chart-panel-header">
+                    <div class="chart-panel-title">
+                        <i class="fa-solid fa-heartbeat" style="color:#f43f5e"></i>
+                        <div><h3>Latency Monitor</h3><span>Network response times (ping every 30s)</span></div>
+                    </div>
+                    <button class="icon-btn" id="btnOpenLatencyTargets" title="Manage targets"><i class="fa-solid fa-sliders"></i></button>
+                </div>
+                <div class="latency-targets-grid" id="latencyTargetsGrid">
+                    <div class="latency-loading"><i class="fa-solid fa-spinner fa-spin"></i> Measuring…</div>
+                </div>
+                <div class="chart-wrap" style="height:130px;margin-top:12px"><canvas id="latencyChart"></canvas></div>
+            </div>
+        </div>
+
+        <!-- LIVE LOG FEED -->
+        <section class="panel log-panel">
+            <div class="panel-header log-panel-header">
+                <div class="panel-title-group">
+                    <div class="panel-icon" style="background:rgba(99,102,241,.12);color:#6366f1"><i class="fa-solid fa-list-check"></i></div>
+                    <div><h2>Live Website Access Feed</h2><p>Real-time audit of every site accessed through the gateway</p></div>
+                </div>
+
+                <div class="log-controls">
+                    <!-- Mode toggle -->
+                    <div class="mode-switcher">
+                        <button class="mode-btn active" id="btnModeClean"><i class="fa-solid fa-sparkles"></i> Clean</button>
+                        <button class="mode-btn" id="btnModeRaw"><i class="fa-solid fa-network-wired"></i> Raw</button>
+                    </div>
+
+                    <!-- Date range -->
+                    <div class="date-range-group">
+                        <label><i class="fa-regular fa-calendar"></i></label>
+                        <input type="date" id="filterDateFrom" class="date-inp" title="From date">
+                        <span class="date-sep">→</span>
+                        <input type="date" id="filterDateTo" class="date-inp" title="To date">
+                        <button class="icon-btn" id="btnClearDates" title="Clear dates"><i class="fa-solid fa-xmark"></i></button>
+                    </div>
+
+                    <!-- Device pills -->
+                    <div class="device-pills" id="deviceFilterPills">
+                        <button class="d-pill active" data-ip="All">&#127760; All</button>
+                    </div>
+
+                    <!-- Search -->
+                    <div class="search-box">
+                        <i class="fa-solid fa-magnifying-glass"></i>
+                        <input type="text" id="logSearch" placeholder="Search site or IP...">
+                    </div>
+
+                    <!-- Filters -->
+                    <select id="categoryFilter" class="filter-select">
+                        <option value="All">All Categories</option>
+                        <option value="Academic &amp; Learning">&#127891; Academic</option>
+                        <option value="Entertainment &amp; Social">&#127902; Entertainment</option>
+                        <option value="Gaming &amp; Arcade">&#127918; Gaming</option>
+                        <option value="Search &amp; Knowledge">&#128269; Search</option>
+                        <option value="Messaging &amp; Collab">&#128172; Messaging</option>
+                        <option value="Proxy &amp; Bypass">&#128737; Proxy</option>
+                        <option value="General Web">&#127760; General</option>
+                    </select>
+                    <select id="statusFilter" class="filter-select">
+                        <option value="All">All Status</option>
+                        <option value="Allowed">Allowed</option>
+                        <option value="Blocked">Blocked</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="table-scroll">
+                <table class="log-table">
+                    <thead>
+                        <tr>
+                            <th>Time</th><th>Device</th><th>IP</th>
+                            <th>Website</th><th>Category</th>
+                            <th>Size</th><th>Status</th><th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="logsTableBody">
+                        <tr class="table-empty-row">
+                            <td colspan="8"><i class="fa-solid fa-satellite-dish"></i> Waiting for traffic…</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <!-- ═══════ DEVICE DRILLDOWN MODAL ═══════ -->
+    <div class="modal-bg" id="deviceModal">
+        <div class="modal-box wide-modal">
+            <div class="modal-top">
+                <div class="modal-device-header">
+                    <div class="modal-dev-avatar" id="modalDevAvatar"><i class="fa-solid fa-mobile-screen"></i></div>
+                    <div><h3 id="modalDevName">Device</h3><code id="modalDevIp">192.168.137.x</code></div>
+                </div>
+                <div class="modal-top-actions">
+                    <button class="ghost-btn" id="btnModalRename"><i class="fa-solid fa-pen"></i> Rename</button>
+                    <button class="close-btn" id="btnCloseDeviceModal"><i class="fa-solid fa-xmark"></i></button>
+                </div>
+            </div>
+            <div class="modal-content">
+                <!-- Tabs -->
+                <div class="modal-tabs">
+                    <button class="modal-tab active" data-tab="overview">Overview</button>
+                    <button class="modal-tab" data-tab="sessions">Sessions</button>
+                    <button class="modal-tab" data-tab="history">Full History</button>
+                </div>
+
+                <!-- Overview -->
+                <div class="modal-tab-content active" id="tab-overview">
+                    <div class="modal-stats-row">
+                        <div class="modal-stat"><span class="mstat-label">VISITS</span><strong id="modalDevRequests">0</strong></div>
+                        <div class="modal-stat"><span class="mstat-label">DATA USED</span><strong id="modalDevBandwidth">0 B</strong></div>
+                        <div class="modal-stat"><span class="mstat-label">TOP SITE</span><strong id="modalDevTopSite">—</strong></div>
+                        <div class="modal-stat"><span class="mstat-label">LAST SEEN</span><strong id="modalDevLastSeen">—</strong></div>
+                    </div>
+                    <!-- Quota bar if set -->
+                    <div id="modalQuotaBar" style="display:none" class="quota-bar-wrap">
+                        <div class="quota-bar-label">
+                            <span><i class="fa-solid fa-gauge-high"></i> Daily Quota</span>
+                            <span id="quotaBarText">0 / 0 MB</span>
+                        </div>
+                        <div class="quota-bar-track"><div class="quota-bar-fill" id="quotaBarFill"></div></div>
+                    </div>
+                    <div class="modal-section">
+                        <div class="modal-section-title"><i class="fa-solid fa-globe"></i> Most Visited Sites</div>
+                        <div class="top-chips" id="modalDevTopSitesList"></div>
+                    </div>
+                </div>
+
+                <!-- Sessions -->
+                <div class="modal-tab-content" id="tab-sessions">
+                    <div id="sessionsContainer"><div class="loading-cell">Loading sessions…</div></div>
+                </div>
+
+                <!-- History -->
+                <div class="modal-tab-content" id="tab-history">
+                    <div class="mini-table-wrap">
+                        <table class="log-table mini">
+                            <thead>
+                                <tr><th>Time</th><th>Website</th><th>Category</th><th>Size</th><th>Status</th><th></th></tr>
+                            </thead>
+                            <tbody id="modalDevLogsBody"><tr><td colspan="6" class="loading-cell">Loading…</td></tr></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════ RENAME MODAL ═══════ -->
+    <div class="modal-bg" id="renameModal">
+        <div class="modal-box small-modal">
+            <div class="modal-top">
+                <div style="display:flex;align-items:center;gap:10px">
+                    <i class="fa-solid fa-pen-to-square" style="color:#6366f1;font-size:18px"></i>
+                    <h3>Set Device Nickname</h3>
+                </div>
+                <button class="close-btn" id="btnCloseRenameModal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-content">
+                <p class="modal-hint">Give this device a recognizable name (e.g. <em>"Aman's Phone"</em>, <em>"Lab PC #4"</em>):</p>
+                <input type="text" id="renameInput" class="text-input" placeholder="Enter custom name…">
+            </div>
+            <div class="modal-bottom">
+                <button class="outline-btn" id="btnCancelRename">Cancel</button>
+                <button class="solid-btn" id="btnSaveRename">Save Name</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════ SETUP GUIDE MODAL ═══════ -->
+    <div class="modal-bg" id="guideModal">
+        <div class="modal-box">
+            <div class="modal-top">
+                <div style="display:flex;align-items:center;gap:10px">
+                    <i class="fa-solid fa-mobile-screen-button" style="color:#06b6d4;font-size:18px"></i>
+                    <h3>Mobile Phone Setup Guide</h3>
+                </div>
+                <button class="close-btn" id="btnCloseGuide"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-content">
+                <div class="setup-step-list">
+                    <div class="setup-step">
+                        <div class="step-num">1</div>
+                        <div class="step-body"><h4>Enable PC Mobile Hotspot</h4>
+                        <p>Windows <strong>Settings &#8594; Network &amp; Internet &#8594; Mobile Hotspot</strong> → Turn ON.</p></div>
+                    </div>
+                    <div class="setup-step">
+                        <div class="step-num">2</div>
+                        <div class="step-body"><h4>Connect Phone Wi-Fi to Hotspot</h4>
+                        <p>Connect your phone's Wi-Fi to the PC Hotspot network.</p></div>
+                    </div>
+                    <div class="setup-step featured-step">
+                        <div class="step-num accent">3</div>
+                        <div class="step-body"><h4>Set Proxy on Phone (10 seconds)</h4>
+                        <p>In phone Wi-Fi settings → gear/&#x2139; → <strong>Proxy: Manual</strong>:</p>
+                        <div class="proxy-box">
+                            <div class="proxy-row"><span>Proxy Host</span><code>192.168.137.1</code></div>
+                            <div class="proxy-row"><span>Port</span><code>8080</code></div>
+                        </div></div>
+                    </div>
+                    <div class="setup-step">
+                        <div class="step-num">4</div>
+                        <div class="step-body"><h4>Browse — you're being monitored!</h4>
+                        <p>Open Chrome/Safari and visit any site. It appears instantly on this dashboard.</p></div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-bottom">
+                <button class="solid-btn" id="btnGotIt"><i class="fa-solid fa-check"></i> Got it, I'm ready!</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════ POLICY MODAL ═══════ -->
+    <div class="modal-bg" id="policyModal">
+        <div class="modal-box">
+            <div class="modal-top">
+                <div style="display:flex;align-items:center;gap:10px">
+                    <i class="fa-solid fa-shield-halved" style="color:#f43f5e;font-size:18px"></i>
+                    <h3>Access Control &amp; Block Policy</h3>
+                </div>
+                <button class="close-btn" id="btnClosePolicy"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-content">
+                <form id="addBlockForm" class="block-form">
+                    <input type="text" id="blockDomainInput" placeholder="Domain (e.g. roblox.com)" required>
+                    <input type="text" id="blockReasonInput" placeholder="Reason (optional)">
+                    <button type="submit" class="danger-btn"><i class="fa-solid fa-ban"></i> Block</button>
+                </form>
+                <div class="rules-section">
+                    <h4 class="rules-heading">Currently Blocked Domains</h4>
+                    <ul class="rules-list" id="rulesList"><li class="empty-rules-note">No rules yet.</li></ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════ QUOTA MODAL ═══════ -->
+    <div class="modal-bg" id="quotaModal">
+        <div class="modal-box">
+            <div class="modal-top">
+                <div style="display:flex;align-items:center;gap:10px">
+                    <i class="fa-solid fa-gauge-high" style="color:#f59e0b;font-size:18px"></i>
+                    <h3>Device Daily Data Quotas</h3>
+                </div>
+                <button class="close-btn" id="btnCloseQuota"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-content">
+                <p class="modal-hint">Set a daily MB data cap per device. When exceeded, the device is blocked until midnight.</p>
+                <form id="addQuotaForm" class="block-form">
+                    <select id="quotaDeviceSelect" class="filter-select" style="flex:1">
+                        <option value="">— Select Device —</option>
+                    </select>
+                    <input type="number" id="quotaMBInput" placeholder="MB / day" min="1" style="width:110px">
+                    <button type="submit" class="solid-btn"><i class="fa-solid fa-gauge-high"></i> Set Quota</button>
+                </form>
+                <div class="rules-section" style="margin-top:16px">
+                    <h4 class="rules-heading">Active Quotas</h4>
+                    <div id="quotaList"><div class="loading-cell">Loading…</div></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════ LATENCY TARGETS MODAL ═══════ -->
+    <div class="modal-bg" id="latencyTargetsModal">
+        <div class="modal-box small-modal">
+            <div class="modal-top">
+                <div style="display:flex;align-items:center;gap:10px">
+                    <i class="fa-solid fa-heartbeat" style="color:#f43f5e;font-size:18px"></i>
+                    <h3>Latency Monitor Targets</h3>
+                </div>
+                <button class="close-btn" id="btnCloseLatencyTargets"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-content">
+                <p class="modal-hint">Add hostnames to monitor network latency (measured every 30s):</p>
+                <form id="addTargetForm" class="block-form">
+                    <input type="text" id="targetLabelInput" placeholder="Label (e.g. College ERP)" required>
+                    <input type="text" id="targetHostInput" placeholder="Host (e.g. erp.college.edu)" required>
+                    <input type="number" id="targetPortInput" placeholder="Port" value="80" style="width:70px">
+                    <button type="submit" class="solid-btn"><i class="fa-solid fa-plus"></i> Add</button>
+                </form>
+                <div class="rules-section" style="margin-top:16px">
+                    <h4 class="rules-heading">Configured Targets</h4>
+                    <ul class="rules-list" id="latencyTargetsList"><li class="empty-rules-note">Loading…</li></ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="toastContainer" class="toast-container"></div>
+    <script src="/static/app.js"></script>
+</body>
+</html>
