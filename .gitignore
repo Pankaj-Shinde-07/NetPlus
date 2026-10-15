@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 __pycache__/
 *.pyc
 *.pyo
@@ -11,6 +11,10 @@ build/
 
 # Database (contains real user traffic data - do not commit)
 network_logs.db
+network_logs.db-shm
+network_logs.db-wal
+*.db-shm
+*.db-wal
 
 # Environment
 .env

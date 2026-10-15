@@ -19,7 +19,12 @@ except Exception:
 DB_PATH = os.path.join(os.path.dirname(__file__), "network_logs.db")
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=15.0)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout=5000;")
+    except Exception:
+        pass
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS access_logs (
@@ -106,6 +111,19 @@ def init_db():
                 ('Cloudflare', 'one.one.one.one', 80),
             ]
         )
+    # Safe column additions if existing DB was created without them
+    try:
+        cursor.execute("ALTER TABLE devices ADD COLUMN mac_address TEXT DEFAULT ''")
+    except Exception:
+        pass
+    try:
+        cursor.execute("ALTER TABLE attendance ADD COLUMN ip_address TEXT DEFAULT ''")
+    except Exception:
+        pass
+    try:
+        cursor.execute("ALTER TABLE attendance ADD COLUMN status TEXT DEFAULT 'Present'")
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 
@@ -406,6 +424,8 @@ class NetworkMonitoringEngine:
         c.execute("SELECT ip, custom_name, auto_name, device_type FROM devices WHERE ip = ?", (ip,))
         row = c.fetchone()
 
+        mac = self.get_mac_for_ip(ip)
+
         if row:
             custom_name = row[1]
             auto_name = row[2]
@@ -414,12 +434,18 @@ class NetworkMonitoringEngine:
             if ua_string and ('Mobile Device' in auto_name or 'Client Device' in auto_name):
                 auto_name = f"{ua_info['name']} (#{ip.split('.')[-1]})"
                 dev_type = ua_info['type']
-                c.execute("UPDATE devices SET auto_name = ?, device_type = ?, last_seen = ? WHERE ip = ?", (auto_name, dev_type, timestamp, ip))
+                c.execute("UPDATE devices SET auto_name = ?, device_type = ?, last_seen = ?, mac_address = COALESCE(NULLIF(?, ''), mac_address) WHERE ip = ?", (auto_name, dev_type, timestamp, mac or '', ip))
             else:
-                c.execute("UPDATE devices SET last_seen = ? WHERE ip = ?", (timestamp, ip))
+                c.execute("UPDATE devices SET last_seen = ?, mac_address = COALESCE(NULLIF(?, ''), mac_address) WHERE ip = ?", (timestamp, mac or '', ip))
             
             conn.commit()
             conn.close()
+
+            if mac:
+                stu = self.get_student_by_mac(mac)
+                if stu:
+                    self.record_attendance(stu, ip=ip)
+
             return {
                 "ip": ip,
                 "name": custom_name or auto_name,
@@ -436,10 +462,16 @@ class NetworkMonitoringEngine:
                 auto_name = f"{ua_info['name']} ({ip})"
                 dev_type = ua_info['type']
 
-            c.execute("INSERT INTO devices (ip, custom_name, auto_name, device_type, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?)",
-                      (ip, '', auto_name, dev_type, timestamp, timestamp))
+            c.execute("INSERT INTO devices (ip, custom_name, auto_name, device_type, first_seen, last_seen, mac_address) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                      (ip, '', auto_name, dev_type, timestamp, timestamp, mac or ''))
             conn.commit()
             conn.close()
+
+            if mac:
+                stu = self.get_student_by_mac(mac)
+                if stu:
+                    self.record_attendance(stu, ip=ip)
+
             return {
                 "ip": ip,
                 "name": auto_name,
@@ -447,22 +479,82 @@ class NetworkMonitoringEngine:
             }
 
     def get_mac_for_ip(self, ip):
-        """Resolve a hotspot client's current MAC from the Windows neighbor table."""
-        if ip in self._mac_cache and time.time() - self._mac_cache[ip][1] < 10:
-            return self._mac_cache[ip][0]
-        if not ip.startswith("192.168.137."):
+        """Resolve a client's current MAC from local cache or the Windows ARP table."""
+        if not ip:
             return None
+        if ip in ("127.0.0.1", "localhost", "::1"):
+            return "host:local:mac:01"
+        if ip in self._mac_cache and time.time() - self._mac_cache[ip][1] < 15:
+            return self._mac_cache[ip][0]
         try:
             result = subprocess.run(
                 ["arp", "-a", ip], capture_output=True, text=True,
                 timeout=2, check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
             )
             match = re.search(r"\b" + re.escape(ip) + r"\s+([0-9a-f]{2}(?:-[0-9a-f]{2}){5})\b", result.stdout, re.I)
+            if not match:
+                result2 = subprocess.run(
+                    ["arp", "-a"], capture_output=True, text=True,
+                    timeout=2, check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                )
+                match = re.search(r"\b" + re.escape(ip) + r"\s+([0-9a-f]{2}(?:-[0-9a-f]{2}){5})\b", result2.stdout, re.I)
+            
             mac = match.group(1).replace("-", ":").lower() if match else None
-            self._mac_cache[ip] = (mac, time.time())
+            if mac:
+                self._mac_cache[ip] = (mac, time.time())
             return mac
         except Exception:
             return None
+
+    def scan_connected_devices(self):
+        """Scan ARP table for connected dynamic devices, update last_seen and auto-mark attendance for recognized student devices."""
+        found = []
+        try:
+            r = subprocess.run(["arp", "-a"], capture_output=True, text=True, timeout=2, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for line in r.stdout.splitlines():
+                m = re.match(r"^\s*(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F]{2}(?:-[0-9a-fA-F]{2}){5})\s+dynamic", line)
+                if m:
+                    ip = m.group(1)
+                    mac = m.group(2).replace("-", ":").lower()
+                    if ip.startswith("224.") or ip.startswith("239.") or ip.endswith(".255") or ip == "255.255.255.255":
+                        continue
+                    self._mac_cache[ip] = (mac, time.time())
+                    found.append((ip, mac))
+
+            if found:
+                to_record = []
+                with sqlite3.connect(DB_PATH, timeout=15.0) as conn:
+                    c = conn.cursor()
+                    for ip, mac in found:
+                        c.execute("SELECT ip, custom_name, auto_name, device_type FROM devices WHERE ip = ?", (ip,))
+                        row = c.fetchone()
+                        if row:
+                            c.execute("UPDATE devices SET last_seen = ?, mac_address = ? WHERE ip = ?", (now, mac, ip))
+                        else:
+                            auto_name = f"Device (#{ip.split('.')[-1]})"
+                            c.execute("INSERT INTO devices (ip, custom_name, auto_name, device_type, first_seen, last_seen, mac_address) VALUES (?, '', ?, 'mobile', ?, ?, ?)",
+                                      (ip, auto_name, now, now, mac))
+                        
+                        # Auto attendance check:
+                        c.execute("SELECT mac_address, prn, name, batch FROM students WHERE mac_address = ?", (mac,))
+                        stu = c.fetchone()
+                        if stu:
+                            to_record.append(({"mac_address": stu[0], "prn": stu[1], "name": stu[2], "batch": stu[3]}, ip))
+
+                for student_dict, client_ip in to_record:
+                    self.record_attendance(student_dict, ip=client_ip)
+        except Exception:
+            pass
+        return found
+
+    def _device_monitor_loop(self):
+        while self.running:
+            try:
+                self.scan_connected_devices()
+            except Exception:
+                pass
+            time.sleep(6)
 
     def get_student_by_mac(self, mac):
         if not mac:
@@ -476,18 +568,33 @@ class NetworkMonitoringEngine:
         except sqlite3.Error:
             return None
 
-    def record_attendance(self, student):
+    def record_attendance(self, student, ip=""):
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         today = now[:10]
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.execute("""
-                INSERT INTO attendance
-                    (mac_address, prn, student_name, batch, attendance_date, first_seen, last_seen, connection_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-                ON CONFLICT(mac_address, attendance_date) DO UPDATE SET
-                    last_seen=excluded.last_seen,
-                    connection_count=attendance.connection_count + 1
-            """, (student["mac_address"], student["prn"], student["name"], student["batch"], today, now, now))
+        try:
+            with sqlite3.connect(DB_PATH, timeout=15.0) as conn:
+                conn.execute("""
+                    INSERT INTO attendance
+                        (mac_address, prn, student_name, batch, attendance_date, first_seen, last_seen, connection_count, ip_address, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, 'Present')
+                    ON CONFLICT(mac_address, attendance_date) DO UPDATE SET
+                        last_seen=excluded.last_seen,
+                        connection_count=attendance.connection_count + 1,
+                        ip_address=CASE WHEN excluded.ip_address != '' THEN excluded.ip_address ELSE attendance.ip_address END,
+                        status='Present'
+                """, (student["mac_address"], student["prn"], student["name"], student["batch"], today, now, now, ip or ""))
+            
+            self.broadcast_event({
+                "type": "ATTENDANCE_RECORDED",
+                "student_name": student["name"],
+                "prn": student["prn"],
+                "batch": student["batch"],
+                "mac_address": student["mac_address"],
+                "ip_address": ip,
+                "time": now
+            })
+        except Exception as e:
+            print(f"Error recording attendance: {e}")
 
     def issue_registration_token(self, ip):
         now = time.time()
@@ -557,7 +664,10 @@ class NetworkMonitoringEngine:
         with self.lock:
             subscribers = list(self.ws_subscribers)
         
-        msg = json.dumps({"type": "NEW_LOG", "data": event})
+        if isinstance(event, dict) and 'type' in event:
+            msg = json.dumps(event)
+        else:
+            msg = json.dumps({"type": "NEW_LOG", "data": event})
         for ws in subscribers:
             try:
                 ws.send_text(msg)
@@ -789,6 +899,10 @@ class NetworkMonitoringEngine:
         self.server_socket.bind((self.host, self.port))
         self.server_socket.listen(200)
         print(f"🚀 Gateway Proxy listening on {self.host}:{self.port}")
+
+        # Start background ARP device discovery and auto-attendance monitor
+        t_mon = threading.Thread(target=self._device_monitor_loop, daemon=True)
+        t_mon.start()
 
         while self.running:
             try:

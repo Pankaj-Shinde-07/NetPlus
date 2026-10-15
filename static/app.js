@@ -214,50 +214,321 @@ async function fetchAIAnalysis() {
 }
 document.getElementById('btnRefreshAI').addEventListener('click', fetchAIAnalysis);
 
-/* ─── Attendance ─────────────────────────────── */
+/* ─── Main Tabs Navigation ───────────────────── */
+function initNavigationTabs() {
+    document.querySelectorAll('.topbar-nav-tab').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const targetId = btn.getAttribute('data-tab');
+            document.querySelectorAll('.topbar-nav-tab').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.app-tab-pane').forEach(p => p.classList.remove('active'));
+            btn.classList.add('active');
+            const pane = document.getElementById(targetId);
+            if (pane) pane.classList.add('active');
+            
+            if (targetId === 'tabAttendance') {
+                fetchAttendance();
+                fetchAttendanceStats();
+                fetchConnectedDevices();
+            } else if (targetId === 'tabAIExport') {
+                fetchExportSchema();
+                fetchExportPreview();
+            }
+        });
+    });
+}
+
+/* ─── Smart Attendance System ────────────────── */
 async function fetchAttendance() {
-    const date = document.getElementById('attendanceDate').value;
+    const dateInput = document.getElementById('attendanceDate');
+    const batchSelect = document.getElementById('attendanceBatchFilter');
+    const searchInput = document.getElementById('attendanceSearchInput');
     const body = document.getElementById('attendanceTableBody');
+    if (!body) return;
+
+    const date = dateInput ? dateInput.value : '';
+    const batch = batchSelect ? batchSelect.value : 'All';
+    const search = searchInput ? searchInput.value.trim() : '';
+
     try {
-        const rows = await fetch(`/api/attendance?date=${encodeURIComponent(date)}`).then(r => r.json());
-        document.getElementById('attendanceCount').textContent = `${rows.length} Present`;
-        body.innerHTML = rows.length ? rows.map(row => `
-            <tr><td class="cell-ip">${escapeHtml(row.prn)}</td><td class="cell-domain">${escapeHtml(row.name)}</td>
-            <td>${escapeHtml(row.batch)}</td><td>${escapeHtml(row.first_seen.split(' ')[1] || row.first_seen)}</td>
-            <td>${escapeHtml(row.last_seen.split(' ')[1] || row.last_seen)}</td><td>${row.connections}</td></tr>`).join('')
-            : '<tr class="table-empty-row"><td colspan="6">No attendance records for this date.</td></tr>';
-    } catch (error) {
-        body.innerHTML = '<tr class="table-empty-row"><td colspan="6">Attendance is temporarily unavailable.</td></tr>';
+        let url = `/api/attendance?date=${encodeURIComponent(date)}`;
+        if (batch && batch !== 'All') url += `&batch=${encodeURIComponent(batch)}`;
+        if (search) url += `&search=${encodeURIComponent(search)}`;
+
+        const rows = await fetch(url).then(r => r.json());
+        const countBadge = document.getElementById('attendanceCount');
+        if (countBadge) countBadge.textContent = `${rows.length} Present`;
+
+        if (!rows.length) {
+            body.innerHTML = '<tr class="table-empty-row"><td colspan="10"><i class="fa-solid fa-user-xmark" style="margin-right:8px"></i> No attendance records found for this date.</td></tr>';
+            return;
+        }
+
+        body.innerHTML = rows.map(r => {
+            const statusClass = r.is_online ? 'online' : (r.status === 'Present' ? 'present' : 'late');
+            const statusLabel = r.is_online ? '<span class="pulse-green"></span> Online Now' : (r.status || 'Present');
+            const shortMac = r.mac_address || '—';
+            const shortIp = r.ip_address ? ` (${r.ip_address})` : '';
+
+            return `
+                <tr>
+                    <td class="cell-ip"><strong>${escapeHtml(r.prn)}</strong></td>
+                    <td class="cell-domain"><strong style="color:var(--tx-1)">${escapeHtml(r.name)}</strong></td>
+                    <td><span class="cat-chip cat-academic">${escapeHtml(r.batch)}</span></td>
+                    <td style="font-family:var(--f-mono);font-size:11px;color:var(--tx-2)">
+                        ${escapeHtml(shortMac)}<span style="color:var(--tx-3);font-size:10px">${escapeHtml(shortIp)}</span>
+                    </td>
+                    <td>${escapeHtml((r.first_seen||'').split(' ')[1] || r.first_seen)}</td>
+                    <td>${escapeHtml((r.last_seen||'').split(' ')[1] || r.last_seen)}</td>
+                    <td><span style="font-weight:600;color:var(--tx-2)">${escapeHtml(r.duration_formatted)}</span></td>
+                    <td style="font-family:var(--f-mono)">${r.connections || 1}</td>
+                    <td><span class="status-pill ${statusClass}">${statusLabel}</span></td>
+                    <td style="text-align:right">
+                        <button class="icon-btn" onclick="deleteAttendanceRecord(${r.id})" title="Delete record" style="width:28px;height:28px;display:inline-flex">
+                            <i class="fa-solid fa-trash-can" style="font-size:11px;color:var(--rose)"></i>
+                        </button>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    } catch (e) {
+        body.innerHTML = '<tr class="table-empty-row"><td colspan="10">Unable to load attendance ledger.</td></tr>';
     }
 }
-document.getElementById('btnRefreshAttendance').addEventListener('click', fetchAttendance);
-document.getElementById('attendanceDate').addEventListener('change', fetchAttendance);
-document.getElementById('adminStudentForm').addEventListener('submit', async event => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const button = form.querySelector('button[type="submit"]');
-    button.disabled = true;
+
+async function fetchAttendanceStats() {
+    const dateInput = document.getElementById('attendanceDate');
+    const date = dateInput ? dateInput.value : '';
     try {
-        const response = await fetch('/api/students', {
-            method: 'POST', headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({
-                mac_address: document.getElementById('adminStudentMac').value,
-                prn: document.getElementById('adminStudentPrn').value,
-                name: document.getElementById('adminStudentName').value,
-                batch: document.getElementById('adminStudentBatch').value
-            })
-        });
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.detail || 'Student registration failed.');
-        form.reset();
-        toast(result.message, 'fa-user-check', '#34d399');
-        fetchAttendance();
-    } catch (error) {
-        toast(error.message, 'fa-circle-exclamation', '#fb7185');
-    } finally {
-        button.disabled = false;
+        const stats = await fetch(`/api/attendance/stats?date=${encodeURIComponent(date)}`).then(r => r.json());
+        
+        const elReg = document.getElementById('valAttRegistered');
+        const elPres = document.getElementById('valAttPresent');
+        const elActive = document.getElementById('valAttActiveNow');
+        const elRate = document.getElementById('valAttRateBadge');
+        const elNav = document.getElementById('navAttendanceCount');
+
+        if (elReg) elReg.textContent = stats.total_registered || 0;
+        if (elPres) elPres.textContent = stats.present_today || 0;
+        if (elActive) elActive.textContent = stats.active_now || 0;
+        if (elRate) elRate.textContent = `${stats.attendance_rate}% Rate`;
+        if (elNav) elNav.textContent = `${stats.active_now || stats.present_today || 0} Live`;
+
+        // Update batch dropdown options if new batches are available
+        const batchSelect = document.getElementById('attendanceBatchFilter');
+        if (batchSelect && stats.batches) {
+            const currentVal = batchSelect.value;
+            const currentOptions = Array.from(batchSelect.options).map(o => o.value);
+            stats.batches.forEach(b => {
+                if (!currentOptions.includes(b)) {
+                    const opt = document.createElement('option');
+                    opt.value = b;
+                    opt.textContent = b;
+                    batchSelect.appendChild(opt);
+                }
+            });
+            batchSelect.value = currentVal;
+        }
+    } catch(e) {}
+}
+
+async function fetchConnectedDevices() {
+    const radarList = document.getElementById('radarDeviceList');
+    const regSelect = document.getElementById('regDeviceSelect');
+    if (!radarList) return;
+
+    try {
+        const devs = await fetch('/api/connected-devices').then(r => r.json());
+        if (!devs.length) {
+            radarList.innerHTML = '<div class="loading-cell" style="padding:20px;text-align:center"><i class="fa-solid fa-signal" style="color:var(--tx-3)"></i><p style="margin-top:6px;font-size:12px;color:var(--tx-3)">No active hotspot/Wi-Fi devices detected.</p></div>';
+            return;
+        }
+
+        // Populate modal select
+        if (regSelect) {
+            regSelect.innerHTML = '<option value="">— Pick Live Device —</option>';
+            devs.forEach(d => {
+                if (d.mac) {
+                    const opt = document.createElement('option');
+                    opt.value = d.mac;
+                    opt.textContent = `${d.name} (${d.ip})`;
+                    regSelect.appendChild(opt);
+                }
+            });
+        }
+
+        radarList.innerHTML = devs.map(d => {
+            const isMatched = !!d.student;
+            const statusHtml = isMatched
+                ? `<span class="radar-status-tag matched"><i class="fa-solid fa-check"></i> ${escapeHtml(d.student.name)} (${escapeHtml(d.student.batch)})</span>`
+                : `<span class="radar-status-tag unmapped"><i class="fa-solid fa-triangle-exclamation"></i> Unassigned Device</span>`;
+            
+            const actionHtml = isMatched
+                ? `<div style="font-size:10px;color:var(--tx-3);font-family:var(--f-mono)">PRN: ${escapeHtml(d.student.prn)} &bull; Attendance Auto-Updating</div>`
+                : `<button class="btn-quick-map" onclick="openAssignModal('${escapeHtml(d.mac)}', '${escapeHtml(d.ip)}')"><i class="fa-solid fa-user-plus"></i> Assign to Student</button>`;
+
+            return `
+                <div class="radar-device-item">
+                    <div class="radar-device-top">
+                        <div class="radar-dev-name">
+                            <i class="fa-solid ${deviceIcon(d.device_type)}" style="color:var(--cyan)"></i>
+                            <span>${escapeHtml(d.name)}</span>
+                        </div>
+                        <span class="live-badge ${d.liveness.toLowerCase()}"><span class="live-dot ${d.liveness==='Online'?'green':'gray'}"></span>${d.liveness}</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;align-items:center">
+                        <span class="radar-dev-ip">${escapeHtml(d.ip)}</span>
+                        <span class="radar-dev-mac">${escapeHtml(d.mac || 'No MAC')}</span>
+                    </div>
+                    ${statusHtml}
+                    ${actionHtml}
+                </div>
+            `;
+        }).join('');
+    } catch(e) {
+        radarList.innerHTML = '<div class="loading-cell">Failed to scan devices.</div>';
     }
-});
+}
+
+function openAssignModal(mac, ip) {
+    const modal = document.getElementById('studentModal');
+    if (!modal) return;
+    const inpMac = document.getElementById('regMac');
+    if (inpMac && mac) inpMac.value = mac;
+    modal.classList.add('active');
+}
+
+async function deleteAttendanceRecord(id) {
+    if (!confirm('Remove this attendance record?')) return;
+    try {
+        await fetch(`/api/attendance/${id}`, { method: 'DELETE' });
+        toast('Attendance record deleted', 'fa-trash-can', '#f59e0b');
+        fetchAttendance();
+        fetchAttendanceStats();
+    } catch(e) {
+        toast('Failed to delete record', 'fa-circle-exclamation', '#fb7185');
+    }
+}
+
+/* ─── AI Dataset Export Studio ───────────────── */
+let activeDatasetType = 'traffic_features';
+
+function initAIExportStudio() {
+    // Dataset Card selection
+    document.querySelectorAll('.dataset-card').forEach(card => {
+        card.addEventListener('click', () => {
+            document.querySelectorAll('.dataset-card').forEach(c => c.classList.remove('selected'));
+            card.classList.add('selected');
+            const radio = card.querySelector('input[type="radio"]');
+            if (radio) radio.checked = true;
+            activeDatasetType = card.getAttribute('data-dataset-type') || 'traffic_features';
+            fetchExportSchema();
+            fetchExportPreview();
+        });
+    });
+
+    // Formats & Limit change
+    const selFmt = document.getElementById('exportFormatSelect');
+    const selMode = document.getElementById('exportModeSelect');
+    const selLimit = document.getElementById('exportLimitSelect');
+    if (selFmt) selFmt.addEventListener('change', fetchExportPreview);
+    if (selMode) selMode.addEventListener('change', fetchExportPreview);
+    if (selLimit) selLimit.addEventListener('change', fetchExportPreview);
+
+    // Refresh preview button
+    const btnRefPrev = document.getElementById('btnRefreshPreview');
+    if (btnRefPrev) btnRefPrev.addEventListener('click', fetchExportPreview);
+
+    // Download AI Dataset button
+    const btnDownload = document.getElementById('btnDownloadAIDataset');
+    if (btnDownload) {
+        btnDownload.addEventListener('click', () => {
+            const format = selFmt ? selFmt.value : 'csv';
+            const mode = selMode ? selMode.value : 'clean';
+            const limit = selLimit ? selLimit.value : '5000';
+            const downloadUrl = `/api/export/ai-dataset?type=${activeDatasetType}&format=${format}&mode=${mode}&limit=${limit}`;
+            
+            toast(`Generating ${activeDatasetType} dataset…`, 'fa-cloud-arrow-down', '#6366f1');
+            const link = document.createElement('a');
+            link.href = downloadUrl;
+            link.setAttribute('download', '');
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            setTimeout(() => toast('AI Dataset downloaded successfully!', 'fa-circle-check', '#10b981'), 1200);
+        });
+    }
+
+    // Copy API URL button
+    const btnCopy = document.getElementById('btnCopyDatasetAPI');
+    if (btnCopy) {
+        btnCopy.addEventListener('click', () => {
+            const format = selFmt ? selFmt.value : 'csv';
+            const mode = selMode ? selMode.value : 'clean';
+            const limit = selLimit ? selLimit.value : '5000';
+            const fullUrl = `${location.protocol}//${location.host}/api/export/ai-dataset?type=${activeDatasetType}&format=${format}&mode=${mode}&limit=${limit}`;
+            navigator.clipboard.writeText(fullUrl).then(() => {
+                toast('API URL copied to clipboard!', 'fa-copy', '#34d399');
+            }).catch(() => {
+                prompt('Copy dataset API URL:', fullUrl);
+            });
+        });
+    }
+}
+
+async function fetchExportSchema() {
+    const tbody = document.getElementById('schemaTableBody');
+    const descEl = document.getElementById('schemaDatasetDesc');
+    if (!tbody) return;
+    try {
+        const data = await fetch('/api/export/schema').then(r => r.json());
+        const dsInfo = data.datasets && data.datasets[activeDatasetType];
+        if (!dsInfo) return;
+        if (descEl) descEl.textContent = dsInfo.description;
+
+        tbody.innerHTML = dsInfo.attributes.map(attr => `
+            <tr>
+                <td style="font-family:var(--f-mono);font-weight:700;color:var(--tx-1)">${escapeHtml(attr.name)}</td>
+                <td style="font-family:var(--f-mono);font-size:11px;color:var(--tx-code)">${escapeHtml(attr.type)}</td>
+                <td><span class="role-badge ${escapeHtml(attr.role)}">${escapeHtml(attr.role)}</span></td>
+                <td style="color:var(--tx-2);font-size:12px">${escapeHtml(attr.description)}</td>
+            </tr>
+        `).join('');
+    } catch(e) {
+        tbody.innerHTML = '<tr><td colspan="4" class="loading-cell">Failed to load feature schema.</td></tr>';
+    }
+}
+
+async function fetchExportPreview() {
+    const container = document.getElementById('previewTableContainer');
+    if (!container) return;
+    const mode = document.getElementById('exportModeSelect')?.value || 'clean';
+
+    container.innerHTML = '<div class="loading-cell"><i class="fa-solid fa-spinner fa-spin"></i> Generating preview sample…</div>';
+
+    try {
+        const rows = await fetch(`/api/export/ai-dataset?type=${activeDatasetType}&format=json&limit=5&mode=${mode}`).then(r => r.json());
+        if (!rows || !rows.length) {
+            container.innerHTML = '<div class="loading-cell">No data rows recorded yet.</div>';
+            return;
+        }
+
+        const headers = Object.keys(rows[0]);
+        const theadHtml = headers.map(h => `<th>${escapeHtml(h)}</th>`).join('');
+        const tbodyHtml = rows.map(row => {
+            const cells = headers.map(h => `<td style="font-family:var(--f-mono);font-size:11px">${escapeHtml(row[h])}</td>`).join('');
+            return `<tr>${cells}</tr>`;
+        }).join('');
+
+        container.innerHTML = `
+            <table class="log-table mini" style="white-space:nowrap">
+                <thead><tr>${theadHtml}</tr></thead>
+                <tbody>${tbodyHtml}</tbody>
+            </table>
+        `;
+    } catch(e) {
+        container.innerHTML = '<div class="loading-cell">Failed to load preview sample.</div>';
+    }
+}
 
 /* ─── Latency Monitor ───────────────────────── */
 const LATENCY_COLORS = ['#6366f1','#06b6d4','#10b981','#f59e0b','#f43f5e','#a855f7'];
@@ -670,19 +941,15 @@ document.getElementById('btnDownloadReport').addEventListener('click', async ()=
     } catch(e) { toast('Report generation failed','fa-circle-exclamation','#fb7185'); }
 });
 
-/* ─── CSV Export ─────────────────────────────── */
-document.getElementById('btnExportCSV').addEventListener('click', async ()=>{
-    try {
-        const logs = await fetch(`/api/logs?limit=10000&mode=${currentMode}`).then(r=>r.json());
-        if (!logs||!logs.length) { toast('No logs to export','fa-circle-info','#f59e0b'); return; }
-        const headers = ['Time','Device','IP','Website','Category','Bytes','Status'];
-        const rows = logs.map(l=>[l.timestamp,l.device_name,l.client_ip,l.clean_site||l.domain,l.category,l.bytes,l.status].map(v=>`"${v}"`).join(','));
-        const a = document.createElement('a');
-        a.href = 'data:text/csv;charset=utf-8,'+encodeURIComponent([headers.join(','),...rows].join('\n'));
-        a.download = `netpulse_logs_${new Date().toISOString().slice(0,10)}.csv`;
-        a.click();
-        toast('CSV exported!','fa-download','#34d399');
-    } catch(e) { toast('Export failed','fa-circle-exclamation','#fb7185'); }
+/* ─── CSV / AI Dataset Export ─────────────────────────── */
+document.getElementById('btnExportCSV').addEventListener('click', ()=>{
+    const aiTabBtn = document.querySelector('.tab-nav-btn[data-tab="tabAIExport"]');
+    if (aiTabBtn) {
+        aiTabBtn.click();
+        const exportCard = document.querySelector('.ai-export-card');
+        if (exportCard) exportCard.scrollIntoView({ behavior: 'smooth' });
+        toast('Opened AI Analytics & Dataset Export Studio', 'fa-brain', '#6366f1');
+    }
 });
 
 /* ─── Clear Logs ─────────────────────────────── */
@@ -754,6 +1021,18 @@ function connectWS() {
     ws.onmessage = e=>{
         try {
             const msg=JSON.parse(e.data);
+            if (msg.type === 'ATTENDANCE_RECORDED') {
+                fetchAttendance();
+                fetchAttendanceStats();
+                fetchConnectedDevices();
+                toast(`🎓 Auto-Attendance: ${msg.student_name || 'Student'} checked in (${msg.time?.split(' ')[1] || 'now'})!`, 'fa-user-check', '#10b981');
+                return;
+            }
+            if (msg.type === 'DEVICE_CONNECTED') {
+                fetchConnectedDevices();
+                fetchAttendanceStats();
+                return;
+            }
             if (msg.type!=='NEW_LOG') return;
             const log=msg.data;
             if (currentMode==='clean' && log.is_background) return;
@@ -784,27 +1063,128 @@ function connectWS() {
     };
 }
 
+/* ─── Student Registration Modal & Attendance Hooks ────────── */
+function initStudentModal() {
+    const btnOpen = document.getElementById('btnOpenStudentModal');
+    const modal = document.getElementById('studentModal');
+    const btnClose = document.getElementById('btnCloseStudentModal');
+    const btnCancel = document.getElementById('btnCancelStudentModal');
+    const form = document.getElementById('studentRegistrationForm');
+    const selDevice = document.getElementById('regDeviceSelect');
+    const inpMac = document.getElementById('regMac');
+
+    if (btnOpen && modal) btnOpen.addEventListener('click', () => { fetchConnectedDevices(); modal.classList.add('active'); });
+    if (btnClose && modal) btnClose.addEventListener('click', () => modal.classList.remove('active'));
+    if (btnCancel && modal) btnCancel.addEventListener('click', () => modal.classList.remove('active'));
+
+    if (selDevice && inpMac) {
+        selDevice.addEventListener('change', () => {
+            if (selDevice.value) inpMac.value = selDevice.value;
+        });
+    }
+
+    if (form) {
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const btnSubmit = form.querySelector('button[type="submit"]');
+            btnSubmit.disabled = true;
+            try {
+                const res = await fetch('/api/students', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        prn: document.getElementById('regPrn').value.trim(),
+                        name: document.getElementById('regName').value.trim(),
+                        batch: document.getElementById('regBatch').value.trim(),
+                        mac_address: inpMac.value.trim()
+                    })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Failed to register student');
+                
+                toast(data.message || 'Student registered & attendance updated!', 'fa-user-check', '#10b981');
+                form.reset();
+                modal.classList.remove('active');
+                fetchAttendance();
+                fetchAttendanceStats();
+                fetchConnectedDevices();
+            } catch(err) {
+                toast(err.message, 'fa-circle-exclamation', '#fb7185');
+            } finally {
+                btnSubmit.disabled = false;
+            }
+        });
+    }
+
+    // Attendance Filter Controls
+    const dateInp = document.getElementById('attendanceDate');
+    const batchSel = document.getElementById('attendanceBatchFilter');
+    const searchInp = document.getElementById('attendanceSearchInput');
+    const btnToday = document.getElementById('btnTodayAttendance');
+    const btnRefAtt = document.getElementById('btnRefreshAttendance');
+    const btnRefRadar = document.getElementById('btnRefreshRadar');
+    const btnExpAtt = document.getElementById('btnExportAttendanceCSV');
+
+    if (dateInp) dateInp.addEventListener('change', () => { fetchAttendance(); fetchAttendanceStats(); });
+    if (batchSel) batchSel.addEventListener('change', fetchAttendance);
+    if (searchInp) searchInp.addEventListener('input', () => {
+        clearTimeout(window._attSearchTimer);
+        window._attSearchTimer = setTimeout(fetchAttendance, 250);
+    });
+    if (btnToday && dateInp) {
+        btnToday.addEventListener('click', () => {
+            const today = new Date();
+            dateInp.value = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+            fetchAttendance();
+            fetchAttendanceStats();
+        });
+    }
+    if (btnRefAtt) btnRefAtt.addEventListener('click', () => { fetchAttendance(); fetchAttendanceStats(); });
+    if (btnRefRadar) btnRefRadar.addEventListener('click', fetchConnectedDevices);
+    if (btnExpAtt) {
+        btnExpAtt.addEventListener('click', () => {
+            const dateVal = dateInp ? dateInp.value : '';
+            toast('Downloading Attendance CSV…', 'fa-file-csv', '#10b981');
+            const link = document.createElement('a');
+            link.href = `/api/export/ai-dataset?type=attendance_ml&format=csv`;
+            link.setAttribute('download', '');
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        });
+    }
+}
+
 /* ─── Bootstrap ───────────────────────────────── */
 document.addEventListener('DOMContentLoaded', ()=>{
     initCharts();
+    initNavigationTabs();
+    initStudentModal();
+    initAIExportStudio();
     requestNotificationPerm();
     fetchStats();
     fetchDevices();
     fetchLogs();
     fetchBandwidthTrend();
     fetchAIAnalysis();
+
     const attendanceDate = document.getElementById('attendanceDate');
     const today = new Date();
-    attendanceDate.value = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+    if (attendanceDate) {
+        attendanceDate.value = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+    }
     fetchAttendance();
+    fetchAttendanceStats();
+    fetchConnectedDevices();
     fetchLatency();
     connectWS();
-    // Auto-refresh every 4s
+
+    // Auto-refresh loops
     setInterval(()=>{ fetchStats(); fetchDevices(); }, 4000);
-    setInterval(fetchAIAnalysis, 30000);
+    setInterval(fetchConnectedDevices, 7000);
+    setInterval(fetchAttendanceStats, 10000);
     setInterval(fetchAttendance, 30000);
-    // Bandwidth trend every 60s
+    setInterval(fetchAIAnalysis, 30000);
     setInterval(fetchBandwidthTrend, 60000);
-    // Latency every 35s (slightly offset from backend 30s)
     setInterval(fetchLatency, 35000);
 });
