@@ -527,20 +527,26 @@ class NetworkMonitoringEngine:
                 with sqlite3.connect(DB_PATH, timeout=15.0) as conn:
                     c = conn.cursor()
                     for ip, mac in found:
-                        c.execute("SELECT ip, custom_name, auto_name, device_type FROM devices WHERE ip = ?", (ip,))
-                        row = c.fetchone()
-                        if row:
-                            c.execute("UPDATE devices SET last_seen = ?, mac_address = ? WHERE ip = ?", (now, mac, ip))
-                        else:
-                            auto_name = f"Device (#{ip.split('.')[-1]})"
-                            c.execute("INSERT INTO devices (ip, custom_name, auto_name, device_type, first_seen, last_seen, mac_address) VALUES (?, '', ?, 'mobile', ?, ?, ?)",
-                                      (ip, auto_name, now, now, mac))
-                        
-                        # Auto attendance check:
+                        # Auto attendance check for registered student
                         c.execute("SELECT mac_address, prn, name, batch FROM students WHERE mac_address = ?", (mac,))
                         stu = c.fetchone()
                         if stu:
                             to_record.append(({"mac_address": stu[0], "prn": stu[1], "name": stu[2], "batch": stu[3]}, ip))
+                            c.execute("SELECT ip FROM devices WHERE ip = ?", (ip,))
+                            if c.fetchone():
+                                c.execute("UPDATE devices SET last_seen = ?, mac_address = ? WHERE ip = ?", (now, mac, ip))
+                            else:
+                                c.execute("INSERT INTO devices (ip, custom_name, auto_name, device_type, first_seen, last_seen, mac_address) VALUES (?, '', ?, 'mobile', ?, ?, ?)",
+                                          (ip, f"{stu[2]}'s Device", now, now, mac))
+                        elif ip.startswith("192.168.137."):
+                            # Genuine client connected to the PC hotspot
+                            c.execute("SELECT ip FROM devices WHERE ip = ?", (ip,))
+                            if c.fetchone():
+                                c.execute("UPDATE devices SET last_seen = ?, mac_address = ? WHERE ip = ?", (now, mac, ip))
+                            else:
+                                auto_name = f"Hotspot Device (#{ip.split('.')[-1]})"
+                                c.execute("INSERT INTO devices (ip, custom_name, auto_name, device_type, first_seen, last_seen, mac_address) VALUES (?, '', ?, 'mobile', ?, ?, ?)",
+                                          (ip, auto_name, now, now, mac))
 
                 for student_dict, client_ip in to_record:
                     self.record_attendance(student_dict, ip=client_ip)
@@ -650,14 +656,13 @@ class NetworkMonitoringEngine:
         # Broadcast via WebSocket
         self.broadcast_event(entry)
 
-    def register_ws(self, ws):
+    def register_ws(self, ws, loop=None):
         with self.lock:
-            self.ws_subscribers.append(ws)
+            self.ws_subscribers.append((ws, loop))
 
     def unregister_ws(self, ws):
         with self.lock:
-            if ws in self.ws_subscribers:
-                self.ws_subscribers.remove(ws)
+            self.ws_subscribers = [(w, l) for (w, l) in self.ws_subscribers if w != ws]
 
     def broadcast_event(self, event):
         dead = []
@@ -668,17 +673,18 @@ class NetworkMonitoringEngine:
             msg = json.dumps(event)
         else:
             msg = json.dumps({"type": "NEW_LOG", "data": event})
-        for ws in subscribers:
+        for item in subscribers:
             try:
-                ws.send_text(msg)
+                ws, loop = item if isinstance(item, tuple) else (item, None)
+                if loop and loop.is_running():
+                    import asyncio
+                    asyncio.run_coroutine_threadsafe(ws.send_text(msg), loop)
             except Exception:
                 dead.append(ws)
         
         if dead:
             with self.lock:
-                for d in dead:
-                    if d in self.ws_subscribers:
-                        self.ws_subscribers.remove(d)
+                self.ws_subscribers = [(w, l) for (w, l) in self.ws_subscribers if w not in dead]
 
     def handle_client(self, client_socket, client_address):
         client_ip, _ = client_address

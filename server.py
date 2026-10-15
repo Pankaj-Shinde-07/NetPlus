@@ -207,7 +207,13 @@ def get_stats(mode: str = "clean", date_from: Optional[str] = None, date_to: Opt
     c.execute(f"SELECT {site_col}, COUNT(*), COALESCE(SUM(bytes_transferred),0) FROM access_logs {where} GROUP BY {site_col} ORDER BY COUNT(*) DESC LIMIT 10", params)
     top_domains = [{"domain": r[0], "count": r[1], "bytes": r[2]} for r in c.fetchall()]
 
-    c.execute("SELECT ip, last_seen FROM devices")
+    c.execute("""
+        SELECT d.ip, d.last_seen 
+        FROM devices d
+        WHERE d.ip LIKE '192.168.137.%' 
+           OR EXISTS (SELECT 1 FROM access_logs a WHERE a.client_ip = d.ip)
+           OR EXISTS (SELECT 1 FROM students s WHERE s.mac_address = d.mac_address)
+    """)
     rows = c.fetchall()
     online = sum(1 for r in rows if calculate_device_liveness(r[1])[0] == "Online")
     conn.close()
@@ -469,7 +475,14 @@ def get_connected_devices():
     engine.scan_connected_devices()
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT ip, custom_name, auto_name, device_type, first_seen, last_seen, COALESCE(mac_address, '') FROM devices ORDER BY last_seen DESC")
+    c.execute("""
+        SELECT d.ip, d.custom_name, d.auto_name, d.device_type, d.first_seen, d.last_seen, COALESCE(d.mac_address, '') 
+        FROM devices d 
+        WHERE d.ip LIKE '192.168.137.%'
+           OR EXISTS (SELECT 1 FROM access_logs a WHERE a.client_ip = d.ip)
+           OR EXISTS (SELECT 1 FROM students s WHERE s.mac_address = d.mac_address)
+        ORDER BY d.last_seen DESC
+    """)
     rows = c.fetchall()
 
     c.execute("SELECT mac_address, prn, name, batch FROM students")
@@ -805,6 +818,9 @@ def export_ai_dataset(
                    COALESCE(SUM(CASE WHEN a.status = 'Blocked' THEN 1 ELSE 0 END), 0) as blocked_cnt
             FROM devices d
             LEFT JOIN access_logs a ON a.client_ip = d.ip
+            WHERE d.ip LIKE '192.168.137.%'
+               OR a.id IS NOT NULL
+               OR EXISTS (SELECT 1 FROM students s WHERE s.mac_address = d.mac_address)
             GROUP BY d.ip
             ORDER BY total_reqs DESC, d.last_seen DESC
         """)
@@ -937,6 +953,12 @@ def get_devices(mode: str = "clean"):
         dev_blocked = st[2] or 0; latest_ts = st[3] or last_seen
 
         liveness, seconds_ago = calculate_device_liveness(latest_ts)
+
+        # Ignore unverified devices that have no requests and are not on the hotspot or registered to a student
+        if dev_req == 0 and not ip.startswith("192.168.137."):
+            c.execute("SELECT 1 FROM students WHERE mac_address=(SELECT mac_address FROM devices WHERE ip=?)", (ip,))
+            if not c.fetchone():
+                continue
 
         c.execute(f"""
             SELECT {site_col}, COUNT(*), COALESCE(SUM(bytes_transferred),0)
@@ -1302,7 +1324,9 @@ def generate_report(mode: str = "clean", date_from: Optional[str] = None, date_t
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    engine.register_ws(websocket)
+    import asyncio
+    loop = asyncio.get_running_loop()
+    engine.register_ws(websocket, loop)
     try:
         while True:
             await websocket.receive_text()
